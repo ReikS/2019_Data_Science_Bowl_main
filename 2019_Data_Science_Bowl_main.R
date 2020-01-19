@@ -74,8 +74,8 @@ par <- list(run_mode        = "production", # possible values: "production", "de
             start_date      = as.Date("2008-07-01"),
             end_date        = as.Date("2018-09-30"),
             hold_out        = 0.3,
-            k_folds         = 10,
-            t_times         = 10,
+            k_folds         = 5,
+            t_times         = 1,
             pre_processing  = c("medianImpute"),
             target_variable = "accuracy_group",
             predictor = c("pred1", "pred2"))
@@ -174,8 +174,8 @@ preprocess <- function(x){
   x$title <- clean_title(x$title)
   x$event_code <- paste0("E", as.character(x$event_code))
   
-  # create dummy variables for event_code, title, type, world
-  x$event_code <- as.factor(x$event_code)
+  # create dummy variables
+  # x$event_code <- as.factor(x$event_code)
   x$title <- as.factor(x$title)
   x$type <- as.factor(x$type)
   x$world <- as.factor(x$world)
@@ -201,22 +201,22 @@ preprocess <- function(x){
   # create dummies for all factors
   y <- dummy(x, chr_to_factor)
   
-  # aggregate dummy varibles
+  # aggregate dummy variables
   z <- cbind(x %>% dplyr::select(installation_id), as.data.frame(y)) %>%
           dplyr::group_by(installation_id) %>%
-          dplyr::summarise_all(list(sum))
+          dplyr::summarise_all(list(min = min, max = max, sum = sum, mean = mean, median = median), na.rm = TRUE)
   
   # aggregate the other variables
   a <- x[no_factor] %>% dplyr::select(installation_id, game_time) %>%
           dplyr::group_by(installation_id) %>%
-          dplyr::summarise_all(list(min = min, max = max, sum = sum, mean = mean, median = median))
+          dplyr::summarise_all(list(min = min, max = max, sum = sum, mean = mean, median = median), na.rm = TRUE)
   
   # combine aggregated data
   return(merge(x = a, y = z, by = "installation_id", all = TRUE))
 }
 
 pre_test <- preprocess(test)
-pre_train <- merge(x = preprocess(train), y = target, by = "installation_id", all = TRUE)
+pre_train <- merge(x = preprocess(train), y = target, by = "installation_id", all = FALSE)
 pre_train <- pre_train[!is.na(pre_train[[par$target_variable]]),]
 
 summary(pre_train)
@@ -237,39 +237,49 @@ folds <- createMultiFolds(mydata[[par$target_variable]], k = par$k_folds, times 
 
 control <- trainControl(
   summaryFunction = defaultSummary,
-  classProbs = TRUE,
+  classProbs = FALSE,
   verboseIter = TRUE,
   savePredictions = TRUE,
   index = folds
 )
 
 ####### 10. estimate model ########
-# CART (classification and regression tree) is implemented in package rpart.
-# When rpart is called through train, it includes automatic pruning. The complexity parameter for CART (cp) 
-# is obtained through cross validation.
+#### CART
 model_rpart <- caret::train(
   x = mydata %>% dplyr::select(-accuracy_group, -installation_id),
   y = mydata[[par$target_variable]] %>% as.factor() %>% make.names(),
   method = "rpart",
-  trControl = control,
-  preProcess = par$pre_processing
+  trControl = control
 )
 
 print(model_rpart)
 print(model_rpart$finalModel)
 
 
-# CART (classification and regression tree) is implemented in package rpart.
-# When rpart is called through train, it includes automatic pruning. The complexity parameter for CART (cp) 
-# is obtained through cross validation.
-model_bstTree <- caret::train(
-  x = mydata %>% dplyr::select(-accuracy_group, -installation_id),
-  y = mydata[[par$target_variable]] %>% as.factor() %>% make.names(),
-  method = "bstTree",
-  trControl = control,
-  preProcess = par$pre_processing
+#### random forest
+model_rf <- caret::train(
+ x = mydata %>% dplyr::select(-accuracy_group, -installation_id),
+ y = mydata[[par$target_variable]] %>% as.factor() %>% make.names(),
+ method = "rf",
+ trControl = control,
+ preProcess = par$pre_processing
 )
 
-print(model_bstTree)
-print(model_bstTree$finalModel)
+print(model_rf)
+print(model_rf$finalModel)
 
+
+####### 11. predict model on training data ########
+# The function "class_to_acc_group' converts the predicted classed from caret
+# back to numbers.
+class_to_acc_group <- function(model_class){
+  substr(model_class, 2, 2)
+}
+# class_to_acc_group(c("X1", "X3"))
+
+submission <- data.frame(installation_id = pre_test$installation_id,
+                         accuracy_group  = class_to_acc_group(predict(model_rf, pre_test)))
+
+
+####### 12. output csv ########
+write.csv(x = submission, file = "submission.csv", row.names = FALSE, quote=FALSE)
